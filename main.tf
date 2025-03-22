@@ -3,13 +3,14 @@
 
 locals {
   metadata = merge(var.metadata, {
-    sshKeys = "${var.remote_user}:${tls_private_key.ssh-key.public_key_openssh}"
+    ssh-keys = "${var.remote_user}:${tls_private_key.ssh-key.public_key_openssh}"
   })
   ssh_tag     = ["allow-ssh"]
   openvpn_tag = ["openvpn-${var.name}"]
   tags        = toset(concat(var.tags, local.ssh_tag, local.openvpn_tag))
 
   private_key_file = "private-key.pem"
+  public_key_file  = "public-key.pem"
   # adding the null_resource to prevent evaluating this until the openvpn_update_users has executed
   refetch_user_ovpn = null_resource.openvpn_update_users_script.id != "" ? !alltrue([for x in var.users : fileexists("${var.output_dir}/${x}.ovpn")]) : false
   host_project_id   = var.network_project_id != null ? var.network_project_id : var.project_id
@@ -57,6 +58,7 @@ resource "google_compute_firewall" "allow-openvpn-udp-port" {
 }
 
 resource "google_compute_address" "default" {
+  project      = var.project_id
   name         = "openvpn-${var.name}-global-ip"
   region       = var.region
   network_tier = var.network_tier
@@ -74,6 +76,12 @@ resource "local_sensitive_file" "private_key" {
   file_permission = "0400"
 }
 
+resource "local_sensitive_file" "public_key" {
+  content         = tls_private_key.ssh-key.public_key_pem
+  filename        = "${var.output_dir}/${local.public_key_file}"
+  file_permission = "0400"
+}
+
 resource "random_id" "this" {
   byte_length = "8"
 }
@@ -85,11 +93,12 @@ resource "random_id" "password" {
 // Use a persistent disk so that it can be remounted on another instance.
 #tfsec:ignore:google-compute-disk-encryption-customer-key
 resource "google_compute_disk" "this" {
-  name  = "openvpn-${var.name}-disk"
-  image = var.image_family
-  size  = var.disk_size_gb
-  type  = var.disk_type
-  zone  = var.zone
+  name    = "openvpn-${var.name}-disk"
+  image   = var.image_family
+  project = var.project_id
+  size    = var.disk_size_gb
+  type    = var.disk_type
+  zone    = var.zone
 }
 
 resource "google_compute_instance_template" "tpl" {
@@ -102,7 +111,6 @@ resource "google_compute_instance_template" "tpl" {
 
   metadata_startup_script = <<SCRIPT
     curl -O ${var.install_script_url}
-    sed -i.bak 's/ifconfig\.co/ifconfig\.me/g' openvpn-install.sh
     chmod +x openvpn-install.sh
     mv openvpn-install.sh /home/${var.remote_user}/
     chown ${var.remote_user}:${var.remote_user} /home/${var.remote_user}/openvpn-install.sh
@@ -133,6 +141,7 @@ resource "google_compute_instance_template" "tpl" {
   }
 
   network_interface {
+    network            = var.network
     subnetwork         = var.subnetwork
     subnetwork_project = local.host_project_id
     dynamic "access_config" {
@@ -158,6 +167,7 @@ resource "google_compute_instance_from_template" "this" {
   zone    = var.zone
 
   network_interface {
+    network            = var.network
     subnetwork         = var.subnetwork
     subnetwork_project = local.host_project_id
     access_config {
@@ -211,7 +221,9 @@ resource "null_resource" "openvpn_update_users_script" {
 # Download user configurations to output_dir
 resource "null_resource" "openvpn_download_configurations" {
   triggers = {
-    trigger = timestamp()
+    # trigger = timestamp()
+    users    = join(",", var.users)
+    instance = google_compute_instance_from_template.this.instance_id
   }
 
   depends_on = [null_resource.openvpn_update_users_script]

@@ -41,7 +41,7 @@ variable "subnetwork" {
 
 variable "image_family" {
   type    = string
-  default = "ubuntu-2004-lts"
+  default = "ubuntu-os-cloud/ubuntu-2004-lts"
 }
 
 variable "disk_type" {
